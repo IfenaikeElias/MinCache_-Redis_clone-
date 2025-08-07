@@ -45,7 +45,6 @@ func (s *Server) CloseConn() {
 		fmt.Println("Failed to Close connection", err.Error())
 	}
 }
-// -------------------------
 
 // ------- Utils for Command response --------
 
@@ -72,7 +71,7 @@ type EchoHandler struct {}
 type PingHandler struct {}
 type SetHandler struct {}
 type GetHandler struct {}
-
+type RpushHandler struct{}
 
 
 type CommandHandler interface {
@@ -84,6 +83,7 @@ var commands = map[string] CommandHandler{
 	"ECHO": EchoHandler{},
 	"SET": SetHandler{},
 	"GET": GetHandler{},
+	"RPUSH": RpushHandler{},
 }
 
 func (e EchoHandler) Execute(conn net.Conn, args ...string) {
@@ -187,7 +187,18 @@ func (g GetHandler) Execute(conn net.Conn, args ...string) {
 	writeBulkStr(conn, bucket.Val)
 }
 
+func (r RpushHandler) Execute(conn net.Conn, args... string ){
+	if len(args) < 2 {
+		writeErr(conn, "RPUSH requires at least 2 t arguements")
+	}
+	key := args[0]
+	items := args[1:]
+	value, _:= DB.LoadOrStore(key, []string{})
+	list := value.([]string)
+	list = append(list, items...)
+	DB.Store(key, list)
 
+} 
 // ------ Command Parser --------
 
 func (s *Server) parseCommand(line string) (CommandHandler, []string, error) {
