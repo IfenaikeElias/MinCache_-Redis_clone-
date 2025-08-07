@@ -73,6 +73,7 @@ type SetHandler struct{}
 type GetHandler struct{}
 type RpushHandler struct{}
 type LrangeHandler struct{}
+type LpushHandler struct{}
 
 type CommandHandler interface {
 	Execute(conn net.Conn, args ...string)
@@ -84,6 +85,7 @@ var commands = map[string]CommandHandler{
 	"SET":    SetHandler{},
 	"GET":    GetHandler{},
 	"RPUSH":  RpushHandler{},
+	"LPUSH": LpushHandler{},
 	"LRANGE": LrangeHandler{},
 }
 
@@ -188,7 +190,37 @@ func (g GetHandler) Execute(conn net.Conn, args ...string) {
 
 func (r RpushHandler) Execute(conn net.Conn, args ...string) {
 	if len(args) < 2 {
-		writeErr(conn, "RPUSH requires at least 2 t arguements")
+		writeErr(conn, "RPUSH requires at least 2 arguements")
+		return 
+	}
+	key := args[0]
+	items := args[1:]
+	value, _ := DB.LoadOrStore(key, []string{})
+	list, ok := value.([]string)
+	if !ok {
+	
+		writeErr(conn, "Invalid data type for the key")
+		return
+	}
+	list = append(list, items...)
+	DB.Store(key, list)
+	writeBulkStr(conn, fmt.Sprintf("(%d)", len(list)))
+}
+
+// ------ Utility function for Lpush to turn arounf list ------
+func reverse(s []string) []string {
+	i, j := 0, len(s) - 1
+	for i < j { 
+		s[i], s[j] = s[j], s[i]
+		i++
+		j--
+	}
+	return s
+}
+func (l LpushHandler) Execute(conn net.Conn, args ...string) {
+	if len(args) < 2 {
+		writeErr(conn, "LPUSH requires at least 2 arguements")
+		return
 	}
 	key := args[0]
 	items := args[1:]
@@ -198,7 +230,8 @@ func (r RpushHandler) Execute(conn net.Conn, args ...string) {
 		writeErr(conn, "Invalid data type for the key")
 		return
 	}
-	list = append(list, items...)
+	temp_list := append([]string{}, items...)
+	list = append(reverse(temp_list), list...)
 	DB.Store(key, list)
 	writeBulkStr(conn, fmt.Sprintf("(%d)", len(list)))
 }
@@ -306,3 +339,4 @@ func main() {
 		}(conn)
 	}
 }
+ 
