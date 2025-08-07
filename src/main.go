@@ -5,22 +5,22 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"sync"
-	"strings"
-	"time"
 	"strconv"
+	"strings"
+	"sync"
+	"time"
 )
 
 const CRLF = "\r\n"
+
 type Server struct {
 	Listener net.Listener
-	Commands map[string] CommandHandler
+	Commands map[string]CommandHandler
 }
-
 
 // ------- Connection helpers ----------
 
-func (s *Server) ListenForConn(){
+func (s *Server) ListenForConn() {
 	ln, err := net.Listen("tcp", "0.0.0.0:6379")
 	if err != nil {
 		fmt.Println("Error starting server:", err.Error())
@@ -31,7 +31,7 @@ func (s *Server) ListenForConn(){
 
 func (s *Server) AcceptConn() (net.Conn, error) {
 	conn, err := s.Listener.Accept()
-	if err != nil {		
+	if err != nil {
 		fmt.Println("Error accepting connection:", err.Error())
 		os.Exit(1)
 	}
@@ -48,7 +48,7 @@ func (s *Server) CloseConn() {
 
 // ------- Utils for Command response --------
 
-func writeBulkStr(conn net.Conn, s string){
+func writeBulkStr(conn net.Conn, s string) {
 	resp := fmt.Sprintf("$%d\r\n%s\r\n", len(s), s)
 	conn.Write([]byte(resp))
 }
@@ -62,28 +62,29 @@ func writeErr(conn net.Conn, msg string) {
 }
 
 func writeNullBulk(conn net.Conn) {
-    conn.Write([]byte("$-1\r\n"))
+	conn.Write([]byte("$-1\r\n"))
 }
 
 // ------ Commands ----------
 
-type EchoHandler struct {}
-type PingHandler struct {}
-type SetHandler struct {}
-type GetHandler struct {}
+type EchoHandler struct{}
+type PingHandler struct{}
+type SetHandler struct{}
+type GetHandler struct{}
 type RpushHandler struct{}
-
+type LrangeHandler struct{}
 
 type CommandHandler interface {
 	Execute(conn net.Conn, args ...string)
 }
 
-var commands = map[string] CommandHandler{
-	"PING": PingHandler{},
-	"ECHO": EchoHandler{},
-	"SET": SetHandler{},
-	"GET": GetHandler{},
-	"RPUSH": RpushHandler{},
+var commands = map[string]CommandHandler{
+	"PING":   PingHandler{},
+	"ECHO":   EchoHandler{},
+	"SET":    SetHandler{},
+	"GET":    GetHandler{},
+	"RPUSH":  RpushHandler{},
+	"LRANGE": LrangeHandler{},
 }
 
 func (e EchoHandler) Execute(conn net.Conn, args ...string) {
@@ -98,69 +99,67 @@ func (p PingHandler) Execute(conn net.Conn, args ...string) {
 	if len(args) == 0 {
 		writeStr(conn, "PONG")
 	} else {
-	writeErr(conn, "unexpected argument for PING")
+		writeErr(conn, "unexpected argument for PING")
 	}
 }
 
 type Bucket struct {
-    Val        string
-    PX         int           // TTL in ms
-    ExpiryTime time.Time     // absolute expiry
-    HasExpiry  bool          // whether to expire
+	Val        string
+	PX         int       // TTL in ms
+	ExpiryTime time.Time // absolute expiry
+	HasExpiry  bool      // whether to expire
 }
 
 var DB sync.Map
 
 func (s SetHandler) Execute(conn net.Conn, args ...string) {
-    if len(args) < 2 {
-        writeErr(conn, "SET command needs at least 2 arguments: key and value")
-        return
-    }
-    if len(args) > 4 {
-        writeErr(conn, "SET command accepts at most 4 arguments")
-        return
-    }
+	if len(args) < 2 {
+		writeErr(conn, "SET command needs at least 2 arguments: key and value")
+		return
+	}
+	if len(args) > 4 {
+		writeErr(conn, "SET command accepts at most 4 arguments")
+		return
+	}
 
-    key, value := args[0], args[1]
+	key, value := args[0], args[1]
 
-    var (
-        d         time.Duration
-        hasExpiry bool
-    )
-    if len(args) == 4 {
-        if strings.ToUpper(args[2]) != "PX" {
-            writeErr(conn, "SET command expects PX as third argument")
-            return
-        }
-        ms, err := strconv.Atoi(args[3])
-        if err != nil || ms <= 0 {
-            writeErr(conn, "PX value must be a positive integer")
-            return
-        }
-        d = time.Duration(ms) * time.Millisecond
-        hasExpiry = true
-    }
+	var (
+		d         time.Duration
+		hasExpiry bool
+	)
+	if len(args) == 4 {
+		if strings.ToUpper(args[2]) != "PX" {
+			writeErr(conn, "SET command expects PX as third argument")
+			return
+		}
+		ms, err := strconv.Atoi(args[3])
+		if err != nil || ms <= 0 {
+			writeErr(conn, "PX value must be a positive integer")
+			return
+		}
+		d = time.Duration(ms) * time.Millisecond
+		hasExpiry = true
+	}
 
-    now := time.Now()
-    bucket := Bucket{
-        Val:        value,
-        PX:         int(d.Milliseconds()),
-        ExpiryTime: now.Add(d),
-        HasExpiry:  hasExpiry,
-    }
+	now := time.Now()
+	bucket := Bucket{
+		Val:        value,
+		PX:         int(d.Milliseconds()),
+		ExpiryTime: now.Add(d),
+		HasExpiry:  hasExpiry,
+	}
 
-    DB.Store(key, bucket)
+	DB.Store(key, bucket)
 
-    if hasExpiry {
-        time.AfterFunc(d, func() {
-            DB.Delete(key)
-        })
-    }
+	if hasExpiry {
+		time.AfterFunc(d, func() {
+			DB.Delete(key)
+		})
+	}
 
-    writeStr(conn, "OK")
+	writeStr(conn, "OK")
 }
-
-
 
 func (g GetHandler) Execute(conn net.Conn, args ...string) {
 	if len(args) != 1 {
@@ -169,7 +168,7 @@ func (g GetHandler) Execute(conn net.Conn, args ...string) {
 	}
 	key := args[0]
 	value, ok := DB.Load(key)
-	
+
 	if !ok {
 		writeNullBulk(conn)
 		return
@@ -187,31 +186,95 @@ func (g GetHandler) Execute(conn net.Conn, args ...string) {
 	writeBulkStr(conn, bucket.Val)
 }
 
-func (r RpushHandler) Execute(conn net.Conn, args... string ){
+func (r RpushHandler) Execute(conn net.Conn, args ...string) {
 	if len(args) < 2 {
 		writeErr(conn, "RPUSH requires at least 2 t arguements")
 	}
 	key := args[0]
 	items := args[1:]
-	value, _:= DB.LoadOrStore(key, []string{})
-	list := value.([]string)
+	value, _ := DB.LoadOrStore(key, []string{})
+	list, ok := value.([]string)
+	if !ok {
+		writeErr(conn, "Invalid data type for the key")
+		return
+	}
 	list = append(list, items...)
 	DB.Store(key, list)
+	writeBulkStr(conn, fmt.Sprintf("(%d)", len(list)))
+}
 
-} 
+func (l LrangeHandler) Execute(conn net.Conn, args ...string) {
+	if len(args) < 3 {
+		writeErr(conn, "LRANGE requires a start and end index")
+		return
+	}
+
+	key := args[0]
+	start, err := strconv.Atoi(args[1])
+	if err != nil {
+		writeErr(conn, "Invalid start index")
+		return
+	}
+
+	end, err := strconv.Atoi(args[2])
+	if err != nil {
+		writeErr(conn, "Invalid end index")
+		return
+	}
+	// Load the list from the database
+	value, ok := DB.Load(key)
+	if !ok {
+		writeNullBulk(conn)
+		return
+	}
+	list, ok := value.([]string)
+	if !ok {
+		writeErr(conn, "Invalid data type for the key")
+		return
+	}
+
+	// Handle negative indexes
+	if start < 0 {
+		start = len(list) + start
+	}
+	if end < 0 {
+		end = len(list) + end
+	}
+
+	// Check if the range is valid
+	if start >= len(list) || end < 0 || start > end {
+		writeNullBulk(conn)
+		return
+	}
+	if end >= len(list) {
+		end = len(list) - 1
+	}
+	result := list[start : end+1]
+	if len(result) == 0 {
+		writeNullBulk(conn)
+		return
+	}
+	// write the length of the result first (for RESP array format)
+	writeBulkStr(conn, fmt.Sprintf("%d", len(result)))
+	// Write each item in the result
+	for _, item := range result {
+		writeBulkStr(conn, item)
+	}
+}
+
 // ------ Command Parser --------
 
 func (s *Server) parseCommand(line string) (CommandHandler, []string, error) {
-    parts := strings.Fields(line)
-    if len(parts) == 0 {
-        return nil, nil, fmt.Errorf("empty input")
-    }
-    cmd := strings.ToUpper(parts[0])
-    handler, ok := s.Commands[cmd]
-    if !ok {
-        return nil, nil, fmt.Errorf("unknown command %s", cmd)
-    }
-    return handler, parts[1:], nil
+	parts := strings.Fields(line)
+	if len(parts) == 0 {
+		return nil, nil, fmt.Errorf("empty input")
+	}
+	cmd := strings.ToUpper(parts[0])
+	handler, ok := s.Commands[cmd]
+	if !ok {
+		return nil, nil, fmt.Errorf("unknown command %s", cmd)
+	}
+	return handler, parts[1:], nil
 }
 
 // ----------- main ------------
@@ -219,7 +282,6 @@ func (s *Server) parseCommand(line string) (CommandHandler, []string, error) {
 func main() {
 	s := &Server{
 		Commands: commands,
-
 	}
 	s.ListenForConn()
 	defer s.CloseConn()
@@ -235,7 +297,7 @@ func main() {
 			for Scanner.Scan() {
 				Text := Scanner.Text()
 				handler, args, err := s.parseCommand(Text)
-				if  err != nil {
+				if err != nil {
 					writeErr(c, err.Error())
 					continue
 				}
@@ -244,22 +306,3 @@ func main() {
 		}(conn)
 	}
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
