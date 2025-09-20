@@ -12,12 +12,10 @@ import (
 )
 
 const CRLF = "\r\n"
- 
 
 type Server struct {
 	Listener net.Listener
 	Commands map[string]CommandHandler
-	
 }
 
 var DB sync.Map
@@ -92,8 +90,7 @@ var commands = map[string]CommandHandler{
 	"RPUSH":  RpushHandler{},
 	"LPUSH":  LpushHandler{},
 	"LRANGE": LrangeHandler{},
-	"INCR": IncrHandler{},
-	
+	"INCR":   IncrHandler{},
 }
 
 func (e EchoHandler) Execute(conn net.Conn, args ...string) {
@@ -112,36 +109,40 @@ func (p PingHandler) Execute(conn net.Conn, args ...string) {
 	}
 }
 
-func (i IncrHandler) Execute(conn net.Conn, args ...string){
+func (h IncrHandler) Execute(conn net.Conn, args ...string) {
 	if len(args) != 1 {
 		writeErr(conn, "INCR requires only one arguement")
 		return
 	}
+
 	key := args[0]
-	val, ok := DB.Load(key)
-	var curr int
-	if !ok {
-       curr = 0
-	   
+	buck, exist := DB.Load(key)
+	var b *Bucket
+	if !exist {
+		b = &Bucket{Val: "0"}
+		DB.Store(key, b)
 	} else {
-		bucket, ok := val.(Bucket)
-		if !ok {
-			writeErr(conn, "ERR Operation against wrong type")
-			return
+		b = buck.(*Bucket)
+		if b.HasExpiry && time.Now().After(b.ExpiryTime) {
+			b.Val = "0"
+			b.HasExpiry = false
+			DB.Store(key, b)
 		}
-		i, err := strconv.Atoi(bucket.Val)
-		if err != nil {
-			writeErr(conn, "ERR value is not an integer")
-			return
-		}
-		curr = i
 	}
-	curr ++
-	DB.Store(key, Bucket{Val: strconv.Itoa(curr)})
-	writeStr()
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	curr, err := strconv.Atoi(b.Val)
+	if err != nil {
+		writeErr(conn, "ERR value is not an integer")
+		return
+	}
+	curr++
+	b.Val = strconv.Itoa(curr)
+	writeStr(conn, b.Val)
 }
 
 type Bucket struct {
+	mu         sync.Mutex
 	Val        string
 	PX         int       // TTL in ms
 	ExpiryTime time.Time // expiry
@@ -149,45 +150,45 @@ type Bucket struct {
 }
 
 func (s SetHandler) Execute(conn net.Conn, args ...string) {
-    if len(args) < 2 || len(args) > 4 {
-        writeErr(conn, "ERR wrong number of arguments for 'set' command")
-        return
-    }
-    key, value := args[0], args[1]
+	if len(args) < 2 || len(args) > 4 {
+		writeErr(conn, "ERR wrong number of arguments for 'set' command")
+		return
+	}
+	key, value := args[0], args[1]
 
-    var (
-        d         time.Duration
-        hasExpiry bool
-    )
-    if len(args) == 4 {
-        if strings.ToUpper(args[2]) != "PX" {
-            writeErr(conn, "ERR syntax error")
-            return
-        }
-        ms, err := strconv.Atoi(args[3])
-        if err != nil || ms <= 0 {
-            writeErr(conn, "ERR PX value must be a positive integer")
-            return
-        }
-        d = time.Duration(ms) * time.Millisecond
-        hasExpiry = true
-    }
+	var (
+		d         time.Duration
+		hasExpiry bool
+	)
+	if len(args) == 4 {
+		if strings.ToUpper(args[2]) != "PX" {
+			writeErr(conn, "ERR syntax error")
+			return
+		}
+		ms, err := strconv.Atoi(args[3])
+		if err != nil || ms <= 0 {
+			writeErr(conn, "ERR PX value must be a positive integer")
+			return
+		}
+		d = time.Duration(ms) * time.Millisecond
+		hasExpiry = true
+	}
 
-    now := time.Now()
-    var bucket Bucket
-    if hasExpiry {
-        bucket = Bucket{
-            Val:        value,
-            PX:         int(d.Milliseconds()),
-            ExpiryTime: now.Add(d),
-            HasExpiry:  true,
-        }
-    } else {
-        bucket = Bucket{Val: value}
-    }
+	now := time.Now()
+	var bucket *Bucket
+	if hasExpiry {
+		bucket = &Bucket{
+			Val:        value,
+			PX:         int(d.Milliseconds()),
+			ExpiryTime: now.Add(d),
+			HasExpiry:  true,
+		}
+	} else {
+		bucket = &Bucket{Val: value}
+	}
 
-    DB.Store(key, bucket)
-    writeStr(conn, "OK")
+	DB.Store(key, bucket)
+	writeStr(conn, "OK")
 }
 
 func (g GetHandler) Execute(conn net.Conn, args ...string) {
@@ -202,7 +203,7 @@ func (g GetHandler) Execute(conn net.Conn, args ...string) {
 		writeNullBulk(conn)
 		return
 	}
-	bucket, Ok := value.(Bucket)
+	bucket, Ok := value.(*Bucket)
 	if !Ok {
 		writeErr(conn, "stored value is invalid")
 		return
@@ -337,20 +338,19 @@ func (s *Server) parseCommand(line string) (CommandHandler, []string, error) {
 }
 
 func startReaper(interval time.Duration) {
-    ticker := time.NewTicker(interval)
-    go func() {
-        for now := range ticker.C {
-            DB.Range(func(k, v interface{}) bool {
-                b := v.(Bucket)
-                if b.HasExpiry && now.After(b.ExpiryTime) {
-                    DB.Delete(k)
-                }
-                return true
-            })
-        }
-    }()
+	ticker := time.NewTicker(interval)
+	go func() {
+		for now := range ticker.C {
+			DB.Range(func(k, v interface{}) bool {
+				b := v.(*Bucket)
+				if b.HasExpiry && now.After(b.ExpiryTime) {
+					DB.Delete(k)
+				}
+				return true
+			})
+		}
+	}()
 }
-
 
 // ----------- main ------------
 
