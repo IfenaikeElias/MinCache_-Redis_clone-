@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"flag"
 )
 
 const CRLF = "\r\n"
@@ -16,6 +17,7 @@ const CRLF = "\r\n"
 type Server struct {
 	Listener net.Listener
 	Commands map[string]CommandHandler
+	port    string
 }
 
 var DB sync.Map
@@ -23,7 +25,8 @@ var DB sync.Map
 // ------- Connection helpers ----------
 
 func (s *Server) ListenForConn() {
-	ln, err := net.Listen("tcp", "0.0.0.0:6379")
+	port := "0.0.0.0:" + s.port
+	ln, err := net.Listen("tcp", port)
 	if err != nil {
 		fmt.Println("Error starting server:", err.Error())
 		os.Exit(1)
@@ -352,16 +355,22 @@ func startReaper(interval time.Duration) {
 	}()
 }
 
+var portFlag = flag.String("port", "6379", "Port for server to listen on")
 // ----------- main ------------
 
 func main() {
+	flag.Parse()
+	
+	fmt.Println("Parsed port: ",*portFlag)
 	startReaper(1 * time.Second)
 	s := &Server{
 		Commands: commands,
+		port:    *portFlag,
+
 	}
 	s.ListenForConn()
 	defer s.CloseConn()
-	fmt.Println("Listening on 0.0.0.0:6379")
+	fmt.Println("Listening on 0.0.0.0:" + s.port)
 
 	for {
 		conn, err := s.AcceptConn()
