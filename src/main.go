@@ -18,6 +18,7 @@ type Server struct {
 	Listener net.Listener
 	Commands map[string]CommandHandler
 	port    string
+	isReplica bool
 }
 
 var DB sync.Map
@@ -80,6 +81,7 @@ type RpushHandler struct{}
 type LrangeHandler struct{}
 type LpushHandler struct{}
 type IncrHandler struct{}
+type InfoHandler struct{}
 
 type CommandHandler interface {
 	Execute(conn net.Conn, args ...string)
@@ -94,7 +96,29 @@ var commands = map[string]CommandHandler{
 	"LPUSH":  LpushHandler{},
 	"LRANGE": LrangeHandler{},
 	"INCR":   IncrHandler{},
+	"INFO":  InfoHandler{}, // Placeholder for INFO command
 }
+
+func buildinfo(s string) []byte {
+	var info strings.Builder
+	info.Grow(256)
+
+	info.WriteString("# Replication\r\n")
+	info.WriteString(fmt.Sprintf("%s\r\r", s))
+
+	return []byte(info.String())
+}
+
+func (i InfoHandler) Execute(conn net.Conn, args ...string) {
+	if len(args) != 1 || args[0] != "replication" {
+		writeErr(conn, "ERR invalid input for info")
+		return
+	}
+	if {}
+	replicationInfo := buildinfo("role:master") 
+		writeBulkStr(conn, string(string(replicationInfo)))
+	}
+	
 
 func (e EchoHandler) Execute(conn net.Conn, args ...string) {
 	if len(args) == 0 {
@@ -356,16 +380,17 @@ func startReaper(interval time.Duration) {
 }
 
 var portFlag = flag.String("port", "6379", "Port for server to listen on")
+var replicaFlag = flag.String("replicaod", "localhost 6379", "flag to assume slave role")
 // ----------- main ------------
 
 func main() {
 	flag.Parse()
-	
-	fmt.Println("Parsed port: ",*portFlag)
+
 	startReaper(1 * time.Second)
 	s := &Server{
 		Commands: commands,
 		port:    *portFlag,
+		isReplica: bool,
 
 	}
 	s.ListenForConn()
