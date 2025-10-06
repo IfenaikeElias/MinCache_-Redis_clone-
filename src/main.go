@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"flag"
 	"fmt"
 	"net"
 	"os"
@@ -9,16 +10,17 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"flag"
 )
 
 const CRLF = "\r\n"
 
 type Server struct {
-	Listener net.Listener
-	Commands map[string]CommandHandler
-	port    string
-	isReplica bool
+	Listener   net.Listener
+	Commands   map[string]CommandHandler
+	port       string
+	isReplica  bool
+	masterHost string
+	masterPort string
 }
 
 var DB sync.Map
@@ -96,29 +98,27 @@ var commands = map[string]CommandHandler{
 	"LPUSH":  LpushHandler{},
 	"LRANGE": LrangeHandler{},
 	"INCR":   IncrHandler{},
-	"INFO":  InfoHandler{}, // Placeholder for INFO command
-}
-
-func buildinfo(s string) []byte {
-	var info strings.Builder
-	info.Grow(256)
-
-	info.WriteString("# Replication\r\n")
-	info.WriteString(fmt.Sprintf("%s\r\r", s))
-
-	return []byte(info.String())
+	"INFO":   InfoHandler{}, // Placeholder for INFO command
 }
 
 func (i InfoHandler) Execute(conn net.Conn, args ...string) {
-	if len(args) != 1 || args[0] != "replication" {
+	if len(args) > 1 || args[0] != "replication" {
 		writeErr(conn, "ERR invalid input for info")
 		return
 	}
-	if {}
-	replicationInfo := buildinfo("role:master") 
-		writeBulkStr(conn, string(string(replicationInfo)))
+	var infor strings.Builder
+	infor.Grow(256)
+	info := &infor
+	if *replicaFlag != "" {
+		info.WriteString("# Replication\r\n")
+		info.WriteString("role:slave \r\n")
+		info.WriteString("master_repl_offset:0\r\n")
+		info.WriteString("master_replid: 8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb\r\n")
 	}
 	
+	info.WriteString("role:master")
+	writeBulkStr(conn, string(string(info.String())))
+}
 
 func (e EchoHandler) Execute(conn net.Conn, args ...string) {
 	if len(args) == 0 {
@@ -380,7 +380,42 @@ func startReaper(interval time.Duration) {
 }
 
 var portFlag = flag.String("port", "6379", "Port for server to listen on")
-var replicaFlag = flag.String("replicaod", "localhost 6379", "flag to assume slave role")
+var replicaFlag = flag.String("replicaof", "localhost 6379", "flag to assume slave role")
+
+func (s *Server) handleMasterConnection(conn net.Conn) {
+	scanner := bufio.NewScanner(conn)
+	for scanner.Scan() {
+		line := scanner.Text()
+		fmt.Println("Received from master:", line)
+		// Here you would implement logic to handle data from master
+		// For simplicity, we just print the received line
+	}
+	if err := scanner.Err(); err != nil {
+		fmt.Println("Error reading from master:", err)
+	}
+}
+
+func (s *Server) connectToMaster() {
+	// Implement connection logic to master here
+	addr := fmt.Sprintf("%v:%v", s.masterHost, s.masterPort)
+	for {
+		conn, err := net.Dial("tcp", addr)
+		if err != nil {
+			fmt.Println("Error connecting to master:", err)
+			time.Sleep(3 * time.Second) // Retry after a delay
+			continue
+		}
+		fmt.Println("Connected to master at", addr)
+		defer conn.Close()
+
+		conn.Write([]byte("PING\r\n"))
+		// Handle communication with master		
+		s.handleMasterConnection(conn)
+
+		break // Exit the loop if connection is successful
+	}
+}
+	
 // ----------- main ------------
 
 func main() {
@@ -389,14 +424,45 @@ func main() {
 	startReaper(1 * time.Second)
 	s := &Server{
 		Commands: commands,
-		port:    *portFlag,
-		isReplica: bool,
-
+		port:     *portFlag,
+		isReplica: replicaFlag != nil && *replicaFlag != "",
 	}
+
+	if s.isReplica {
+		parts := strings.Split(*replicaFlag, " ")
+		if len(parts) != 2 {
+			fmt.Println("Invalid replicaof format. Use 'host port'")
+			os.Exit(1) // if firmat or host port is invalidjust close the connection and continue
+		}
+		s.masterHost = parts[0]
+		s.masterPort = parts[1]
+		fmt.Printf("Configured as replica of %s:%s\n", s.masterHost, s.masterPort)
+		go s.connectToMaster()
+	}
+
 	s.ListenForConn()
 	defer s.CloseConn()
 	fmt.Println("Listening on 0.0.0.0:" + s.port)
 
+	if s.isReplica {
+		masterConn, err := net.Dial("tcp", fmt.Sprintf("%v:%v", s.masterHost, s.masterPort))
+		fmt.Printf("Running as replica of %s:%s\n", s.masterHost, s.masterPort)
+		if err != nil {
+			fmt.Println("Error connecting to master:", err)
+			os.Exit(1)
+		}
+		defer masterConn.Close()
+		masterConn.Write([]byte("PING\r\n"))
+		// Send SYNC command to master
+		// _, err = masterConn.Write([]byte("SYNC\r\n"))
+		// if err != nil {
+		// 	fmt.Println("Error sending SYNC command:", err)
+		// 	os.Exit(1)
+		// }
+		// Here you would implement the logic to read and apply data from master
+		// For simplicity, we just print a message
+		fmt.Println("Sent SYNC command to master")
+	}
 	for {
 		conn, err := s.AcceptConn()
 		if err != nil {
@@ -404,6 +470,8 @@ func main() {
 			continue
 		}
 		fmt.Println("Accepted connection from", conn.RemoteAddr())
+
+		// Handle each connection in a new goroutine
 		go func(c net.Conn) {
 			Scanner := bufio.NewScanner(conn)
 			for Scanner.Scan() {
