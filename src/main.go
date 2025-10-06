@@ -73,6 +73,14 @@ func writeNullBulk(conn net.Conn) {
 	conn.Write([]byte("$-1\r\n"))
 }
 
+func writeArray(conn net.Conn, items []string) {
+	resp := fmt.Sprintf("*%d\r\n", len(items))
+	for _, items := range items {
+		resp += fmt.Sprintf("$%d\r\n%s\r\n", len(items), items)
+	}
+	conn.Write([]byte(resp))
+}
+
 // ------ Commands ----------
 
 type EchoHandler struct{}
@@ -387,6 +395,12 @@ func (s *Server) handleMasterConnection(conn net.Conn) {
 	for scanner.Scan() {
 		line := scanner.Text()
 		fmt.Println("Received from master:", line)
+
+		// handleMasterConnection is the place where you define how your replica 
+		// server should behave when it receives data from the master server. 
+		// It’s the main loop for handling all incoming communication from the master.
+
+
 		// Here you would implement logic to handle data from master
 		// For simplicity, we just print the received line
 	}
@@ -398,17 +412,28 @@ func (s *Server) handleMasterConnection(conn net.Conn) {
 func (s *Server) connectToMaster() {
 	// Implement connection logic to master here
 	addr := fmt.Sprintf("%v:%v", s.masterHost, s.masterPort)
+	i := 0
 	for {
 		conn, err := net.Dial("tcp", addr)
 		if err != nil {
 			fmt.Println("Error connecting to master:", err)
-			time.Sleep(3 * time.Second) // Retry after a delay
+			// Retry after a delay
+			time.Sleep(3 * time.Second)
+			i++
+			// if fails 5 times stop the replica server from running
+			if i > 5 {
+				fmt.Println("Failed to connect to master after several attempts. Exiting.")
+				os.Exit(1)
+			}
+			fmt.Println("Retrying connection to master...")
 			continue
 		}
 		fmt.Println("Connected to master at", addr)
 		defer conn.Close()
 
 		conn.Write([]byte("PING\r\n"))
+		writeArray(conn, []string{"REPLCONF", "listening-port", s.port})
+		writeArray(conn, []string{"REPLCONF", "capa", "psync2"})
 		// Handle communication with master		
 		s.handleMasterConnection(conn)
 
@@ -425,7 +450,7 @@ func main() {
 	s := &Server{
 		Commands: commands,
 		port:     *portFlag,
-		isReplica: replicaFlag != nil && *replicaFlag != "",
+		isReplica: *replicaFlag != "",
 	}
 
 	if s.isReplica {
